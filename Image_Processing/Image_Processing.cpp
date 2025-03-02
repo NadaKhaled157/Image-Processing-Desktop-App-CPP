@@ -1,6 +1,8 @@
 ﻿#include "image_processing.h"
 #include "ui_image_processing.h"
 
+#include <QString>
+
 using namespace std;
 
 Image_Processing::Image_Processing(QWidget* parent)
@@ -19,7 +21,11 @@ Image_Processing::Image_Processing(QWidget* parent)
     ui->slider_param_1->setValue(noiseParam_1);
     ui->slider_param_2->setValue(noiseParam_2);
 
+    ui->kernel_size_slider->setRange(0, 4);
+    /*ui->kernel_size_slider->setSingleStep(2);*/
+
     ui->Widget_Org_Image->installEventFilter(this); // widget responsible for image upload
+    ui->Widget_Output_1->installEventFilter(this);
 
     //  Noise Combo Box
     connect(ui->Combox_Noise, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -36,6 +42,8 @@ Image_Processing::Image_Processing(QWidget* parent)
     // Filter Combo Box
     connect(ui->Combox_Filter, QOverload<int>::of(&QComboBox::currentIndexChanged),
         this, &Image_Processing::onFilterComboBoxSelectionChanged);
+    //// Kernel Size Slider
+    connect(ui->kernel_size_slider, &QSlider::valueChanged, this, &Image_Processing::onKernelSizeSliderValueChanged);
 
     // Edge Detector Combo Box
     connect(ui->Combox_Edges, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -51,6 +59,17 @@ Image_Processing::Image_Processing(QWidget* parent)
 
     // Local and Global Thresholding
     connect(ui->RadioButton_Threshold, &QRadioButton::toggled, this, &Image_Processing::onThresholdingSelected);
+
+    // Frequency Domain Filters
+    connect(ui->RadioButton_Domain_Filter, &QRadioButton::toggled, this, &Image_Processing::applyFrequencyDomainFilter);
+    connect(ui->slider_freq_domain, &QSlider::valueChanged, this, &Image_Processing::applyFrequencyDomainFilter);
+
+
+    // Hybrid Images
+    connect(ui->checkBox_Mixer, &QCheckBox::checkStateChanged, this, &Image_Processing::applyFrequencyDomainMixer);
+    connect(ui->slider_freq_img1, &QSlider::valueChanged, this, &Image_Processing::applyFrequencyDomainMixer);
+    connect(ui->slider_freq_img2, &QSlider::valueChanged, this, &Image_Processing::applyFrequencyDomainMixer);
+    /*connect(ui->checkBox_grayImg, &QCheckBox::checkStateChanged, this, &Image_Processing::drawHistogramAndDistribution);*/
     
 }
 
@@ -59,32 +78,44 @@ Image_Processing::~Image_Processing() {
 }
 
 bool Image_Processing::eventFilter(QObject* obj, QEvent* event) {
-    if (obj == ui->Widget_Org_Image && event->type() == QEvent::MouseButtonDblClick) {
+    if ((obj == ui->Widget_Org_Image || obj == ui->Widget_Output_1) && event->type() == QEvent::MouseButtonDblClick) {
         // Double-click detected -> Load image
         QString fileName = QFileDialog::getOpenFileName(this, "Open Image", "", "Images (*.png *.jpg *.bmp)");
         if (!fileName.isEmpty()) {
-            originalImageColored = cv::imread(fileName.toStdString()); // Read image normally
-            originalImage = cv::imread(fileName.toStdString(), cv::IMREAD_GRAYSCALE); // Read image grayscale
-            if (!originalImage.empty()) {
-
-                showImage(originalImage, ui->Widget_Org_Image);  // Display image
-                // Reset Options
-                ui->Combox_Noise->setCurrentIndex(0);
-                ui->Combox_Filter->setCurrentIndex(0);
-                ui->Combox_Edges->setCurrentIndex(0);
-                // Clear outputs upon new upload
-                ui->Widget_Output_1->clear();
-                ui->Widget_Output_2->clear();
-                qDebug() << "Image uploaded successfully.";
+            if (obj == ui->Widget_Org_Image) {
+                originalImageColored = cv::imread(fileName.toStdString()); // Read image normally
+                originalImage = cv::imread(fileName.toStdString(), cv::IMREAD_GRAYSCALE); // Read image grayscale
             }
             else {
-                qDebug() << "Failed to load image.";
+                secondImage = cv::imread(fileName.toStdString(), cv::IMREAD_GRAYSCALE);
             }
+
+            if (obj == ui->Widget_Org_Image && !originalImage.empty()) {
+                showImage(originalImage, ui->Widget_Org_Image);  // Display image
+                ui->Widget_Output_1->clear();
+            }
+            else if (obj == ui->Widget_Output_1 && !secondImage.empty()) {
+                showImage(secondImage, ui->Widget_Output_1);
+            }
+
+            // Reset Options
+            ui->Combox_Noise->setCurrentIndex(0);
+            ui->Combox_Filter->setCurrentIndex(0);
+            ui->Combox_Edges->setCurrentIndex(0);
+            // Clear outputs upon new upload
+            ui->Widget_Output_2->clear();
+
+            qDebug() << "Image uploaded successfully.";
+        }
+        else {
+            qDebug() << "Failed to load image.";
         }
         return true;
     }
+
     return QMainWindow::eventFilter(obj, event);
 }
+
 
 void Image_Processing::showImage(const cv::Mat& img, QLabel* imageLabel) {
     if (img.empty()) {
@@ -330,6 +361,17 @@ cv::Mat Image_Processing::addGaussianNoise(const cv::Mat& img, double mean, doub
 }
 
 // FILTERING
+void Image_Processing::onKernelSizeSliderValueChanged(int value) {
+    int oddNumbers[] = { 1, 3, 5, 7, 9 };
+    kernelSize = ui->kernel_size_slider->value();
+    kernelSize = oddNumbers[kernelSize]; // Mapping values
+    ui->kernel_size_label->setText(QString::number(kernelSize));
+
+    int idx = ui->Combox_Filter->currentIndex();
+    onFilterComboBoxSelectionChanged(idx);
+
+}
+
 void Image_Processing::onFilterComboBoxSelectionChanged(int index) {
     qDebug() << "APPLYNG FILTER...";
     if (originalImage.empty()) {
@@ -339,17 +381,18 @@ void Image_Processing::onFilterComboBoxSelectionChanged(int index) {
 
     QString selectedFilter = ui->Combox_Filter->itemText(index);
     qDebug() << "Selected Filter:" << selectedFilter;
+    
 
     if (selectedFilter == "Average") {
-        filteredImage = applyAverageFilter(noisyImage, 3);
+        filteredImage = applyAverageFilter(noisyImage, kernelSize);
 
     }
     else if (selectedFilter == "Gaussian") {
-        filteredImage = applyGaussianFilter(noisyImage, 3);
+        filteredImage = applyGaussianFilter(noisyImage, kernelSize);
 
     }
     else if (selectedFilter == "Median") { // Median
-        filteredImage = applyMedianFilter(noisyImage, 3);
+        filteredImage = applyMedianFilter(noisyImage, kernelSize);
 
     }
     else { // None
@@ -359,24 +402,33 @@ void Image_Processing::onFilterComboBoxSelectionChanged(int index) {
     showImage(filteredImage, ui->Widget_Output_2);
 
     // Reapply noise (needed if we were detecting edges before applying the filter)
-    int idx = ui->Combox_Noise->currentIndex();
-    onNoiseComboBoxSelectionChanged(idx, true);
+    if (detectingEdges) {
+        detectingEdges = false;
+        int idx = ui->Combox_Noise->currentIndex();
+        onNoiseComboBoxSelectionChanged(idx, true);
+    }
 }
 
 // FILTER FUNCTIONS
 
 cv::Mat Image_Processing::applyAverageFilter(const cv::Mat& img, int kernelSize) {
+
+    if (kernelSize == 1)
+        return noisyImage;
     cv::Mat filteredImage = img.clone();
-    // Apply 3x3 average box filter (excluding borders)
-    for (int i = 1; i < img.rows - 1; ++i) {
-        for (int j = 1; j < img.cols - 1; ++j) {
+
+    int halfSize = kernelSize / 2;
+
+    // Apply average filter dynamically
+    for (int i = halfSize; i < img.rows - halfSize; ++i) {
+        for (int j = halfSize; j < img.cols - halfSize; ++j) {
             int sum = 0;
-            for (int x = -1; x <= 1; ++x) {
-                for (int y = -1; y <= 1; ++y) {
+            for (int x = -halfSize; x <= halfSize; ++x) {
+                for (int y = -halfSize; y <= halfSize; ++y) {
                     sum += img.at<uchar>(i + x, j + y);
                 }
             }
-            filteredImage.at<uchar>(i, j) = sum / 9;
+            filteredImage.at<uchar>(i, j) = sum / (kernelSize * kernelSize);
         }
     }
 
@@ -386,55 +438,119 @@ cv::Mat Image_Processing::applyAverageFilter(const cv::Mat& img, int kernelSize)
 
 }
 
+//cv::Mat Image_Processing::applyGaussianFilter(const cv::Mat& img, int kernelSize) {
+//    cv::Mat filteredImage = img.clone();
+//
+//    double gaussianKernel[3][3] = {
+//            {1, 2, 1},
+//            {2, 4, 2},
+//            {1, 2, 1}
+//    };
+//
+//    double kernelSum = 16.0;  // Sum of all kernel elements for normalization
+//
+//    // Apply 3x3 Gaussian filter manually
+//    for (int i = 1; i < img.rows - 1; ++i) {
+//        for (int j = 1; j < img.cols - 1; ++j) {
+//            double sum = 0.0;
+//
+//            for (int x = -1; x <= 1; ++x) {
+//                for (int y = -1; y <= 1; ++y) {
+//                    sum += img.at<uchar>(i + x, j + y) * gaussianKernel[x + 1][y + 1];
+//                }
+//            }
+//
+//            filteredImage.at<uchar>(i, j) = static_cast<uchar>(sum / kernelSum);
+//        }
+//    }
+//
+//    qDebug() << "Manual Gaussian Filter applied!";
+//
+//    return filteredImage;
+//}
+
+#include <opencv2/opencv.hpp>
+#include <vector>
+#include <cmath>
+
 cv::Mat Image_Processing::applyGaussianFilter(const cv::Mat& img, int kernelSize) {
+    // Ensure kernel size is odd and >= 3
+    if (kernelSize < 3 || kernelSize % 2 == 0) {
+        qDebug() << "Invalid kernel size! Must be an odd number >= 3.";
+        return img;
+    }
+
     cv::Mat filteredImage = img.clone();
+    int halfSize = kernelSize / 2;
+    double sigma = kernelSize / 6.0;  // Approximate rule for sigma
+    double sum = 0.0;
 
-    double gaussianKernel[3][3] = {
-            {1, 2, 1},
-            {2, 4, 2},
-            {1, 2, 1}
-    };
+    // Create the Gaussian kernel
+    std::vector<std::vector<double>> gaussianKernel(kernelSize, std::vector<double>(kernelSize));
 
-    double kernelSum = 16.0;  // Sum of all kernel elements for normalization
-
-    // Apply 3x3 Gaussian filter manually
-    for (int i = 1; i < img.rows - 1; ++i) {
-        for (int j = 1; j < img.cols - 1; ++j) {
-            double sum = 0.0;
-
-            for (int x = -1; x <= 1; ++x) {
-                for (int y = -1; y <= 1; ++y) {
-                    sum += img.at<uchar>(i + x, j + y) * gaussianKernel[x + 1][y + 1];
-                }
-            }
-
-            filteredImage.at<uchar>(i, j) = static_cast<uchar>(sum / kernelSum);
+    for (int x = -halfSize; x <= halfSize; ++x) {
+        for (int y = -halfSize; y <= halfSize; ++y) {
+            gaussianKernel[x + halfSize][y + halfSize] =
+                (1.0 / (2.0 * M_PI * sigma * sigma)) * exp(-(x * x + y * y) / (2.0 * sigma * sigma));
+            sum += gaussianKernel[x + halfSize][y + halfSize];  // Sum for normalization
         }
     }
 
-    qDebug() << "Manual Gaussian Filter applied!";
+    // Normalize the kernel
+    for (int x = 0; x < kernelSize; ++x) {
+        for (int y = 0; y < kernelSize; ++y) {
+            gaussianKernel[x][y] /= sum;
+        }
+    }
+
+    // Apply Gaussian filter
+    for (int i = halfSize; i < img.rows - halfSize; ++i) {
+        for (int j = halfSize; j < img.cols - halfSize; ++j) {
+            double pixelSum = 0.0;
+
+            for (int x = -halfSize; x <= halfSize; ++x) {
+                for (int y = -halfSize; y <= halfSize; ++y) {
+                    pixelSum += img.at<uchar>(i + x, j + y) * gaussianKernel[x + halfSize][y + halfSize];
+                }
+            }
+
+            filteredImage.at<uchar>(i, j) = static_cast<uchar>(pixelSum);
+        }
+    }
+
+    qDebug() << "Gaussian Filter applied with kernel size:" << kernelSize;
 
     return filteredImage;
 }
 
-cv::Mat Image_Processing::applyMedianFilter(const cv::Mat& img, int kernelSize) {
-    cv::Mat filteredImage = img.clone();
 
-    for (int i = 1; i < img.rows - 1; ++i) {
-        for (int j = 1; j < img.cols - 1; ++j) {
+cv::Mat Image_Processing::applyMedianFilter(const cv::Mat& img, int kernelSize) {
+    if (kernelSize < 3 || kernelSize % 2 == 0) {
+        qDebug() << "Invalid kernel size! Must be an odd number >= 3."; // already ensured during mapping but good for size 1
+        return img;
+    }
+
+    cv::Mat filteredImage = img.clone();
+    int halfSize = kernelSize / 2;
+
+    for (int i = halfSize; i < img.rows - halfSize; ++i) {
+        for (int j = halfSize; j < img.cols - halfSize; ++j) {
             std::vector<uchar> neighbors;
 
-            for (int x = -1; x <= 1; ++x) {
-                for (int y = -1; y <= 1; ++y) {
+            // Collect neighboring pixels in the kernel
+            for (int x = -halfSize; x <= halfSize; ++x) {
+                for (int y = -halfSize; y <= halfSize; ++y) {
                     neighbors.push_back(img.at<uchar>(i + x, j + y));
                 }
             }
 
+            // Sort and pick the median value
             std::sort(neighbors.begin(), neighbors.end());
-            filteredImage.at<uchar>(i, j) = neighbors[4];  // Median value (middle of sorted list)
+            filteredImage.at<uchar>(i, j) = neighbors[neighbors.size() / 2];  // Middle element
         }
     }
-    qDebug() << "Manual Median Filter applied!";
+
+    qDebug() << "Median Filter applied with kernel size:" << kernelSize;
     return filteredImage;
 }
 
@@ -452,6 +568,8 @@ void Image_Processing::onEdgeComboBoxSelectionChanged(int index) {
 
     ui->Label_output_1->setText("Horizontal Edges");
     ui->Label_output_2->setText("Vertical Edges");
+
+    detectingEdges = true;
 
     if (selectedEdgeDetector == "Sobel") {
         applyManualSobel();
@@ -475,6 +593,7 @@ void Image_Processing::onEdgeComboBoxSelectionChanged(int index) {
 
     }
     else { // None
+        detectingEdges = false;
         ui->Widget_Output_1->clear();
         ui->Label_output_1->setText("Output 1");
         ui->Label_output_2->setText("Output 2");
@@ -864,4 +983,188 @@ void Image_Processing::normalizeAndEqualize() {
     cv::Mat equalizedImage;
     cv::equalizeHist(originalImage, equalizedImage);
     showImage(equalizedImage, ui->Widget_Output_2);
+}
+
+// FREQUENCY DOMAIN FILTERS AND HYBRID IMAGES //
+
+void Image_Processing::applyFrequencyDomainMixer()
+{
+    // Only proceed if the mixer rcheck box is checked
+    if (!ui->checkBox_Mixer->isChecked()) {
+        secondImage = cv::Mat();
+        ui->Widget_Output_1->clear();
+        ui->Widget_Output_2->clear();
+        return;
+    }
+
+    // Check if images are empty
+    if (originalImage.empty() || secondImage.empty()) {
+        qDebug() << "Error: One or both input images are empty";
+        return;
+    }
+
+    // Ensure both images have the same size
+    if (originalImage.size() != secondImage.size()) {
+        // Resize second image to match the original if needed
+        cv::resize(secondImage, secondImage, originalImage.size());
+    }
+
+    // Get the radius (cutoff frequency) from each slider
+    int radiusImg1 = ui->slider_freq_img1->value();
+    int radiusImg2 = ui->slider_freq_img2->value();
+
+    // Process originalImage with low-pass filter using slider_freq_img1
+    cv::Mat lowPassResult = applyFrequencyFilter(originalImage, radiusImg1, true);
+
+    // Process secondImage with high-pass filter using slider_freq_img2
+    cv::Mat highPassResult = applyFrequencyFilter(secondImage, radiusImg2, false);
+
+    // Mix the two filtered images
+    cv::Mat mixedResult;
+    cv::addWeighted(lowPassResult, 0.5, highPassResult, 0.5, 0, mixedResult);
+
+    // Update display widget
+    showImage(mixedResult, ui->Widget_Output_2);
+
+    qDebug() << "Frequency domain mixer applied with cutoffs: Image1=" << radiusImg1 << ", Image2=" << radiusImg2;
+}
+
+// Helper function to apply frequency domain filter (low-pass or high-pass)
+cv::Mat Image_Processing::applyFrequencyFilter(const cv::Mat& inputImage, int radius, bool isLowPass)
+{
+    // Get optimal size for DFT
+    int rows = cv::getOptimalDFTSize(inputImage.rows);
+    int cols = cv::getOptimalDFTSize(inputImage.cols);
+
+    // Create padded image for DFT
+    cv::Mat padded;
+    cv::copyMakeBorder(inputImage, padded, 0, rows - inputImage.rows, 0, cols - inputImage.cols,
+        cv::BORDER_CONSTANT, cv::Scalar::all(0));
+
+    // Convert to float for DFT operations
+    cv::Mat paddedFloat;
+    padded.convertTo(paddedFloat, CV_32F);
+
+    // Prepare complex image for DFT result (real + imaginary parts)
+    cv::Mat planes[] = {
+        paddedFloat,
+        cv::Mat::zeros(paddedFloat.size(), CV_32F)
+    };
+    cv::Mat complexImage;
+    cv::merge(planes, 2, complexImage);
+
+    // Perform DFT
+    cv::dft(complexImage, complexImage);
+
+    // Shift zero frequency to center for filtering
+    shiftDFT(complexImage);
+
+    // Create filter mask
+    cv::Mat mask = createCircularMask(complexImage.size(), radius, isLowPass);
+
+    // Apply filter
+    cv::Mat filterResult;
+    cv::mulSpectrums(complexImage, mask, filterResult, 0);
+
+    // Shift back before inverse DFT
+    shiftDFT(filterResult);
+
+    // Perform inverse DFT
+    cv::Mat inverseResult;
+    cv::idft(filterResult, inverseResult, cv::DFT_REAL_OUTPUT);
+
+    // Normalize result for display
+    cv::normalize(inverseResult, inverseResult, 0, 255, cv::NORM_MINMAX);
+
+    // Convert back to 8-bit for display
+    cv::Mat result;
+    inverseResult.convertTo(result, CV_8U);
+
+    return result;
+}
+
+void Image_Processing::applyFrequencyDomainFilter()
+{
+    // Only proceed if the domain filter radio button is checked
+    if (!ui->RadioButton_Domain_Filter->isChecked()) {
+        return;
+    }
+
+    // Check if image is empty
+    if (originalImage.empty()) {
+        qDebug() << "Error: Input image is empty";
+        return;
+    }
+
+    // Get the radius (cutoff frequency) from slider
+    int radius = ui->slider_freq_domain->value();
+
+    // Apply low-pass filter
+    cv::Mat inverseLowPass = applyFrequencyFilter(originalImage, radius, true);
+
+    // Apply high-pass filter
+    cv::Mat inverseHighPass = applyFrequencyFilter(originalImage, radius, false);
+
+    // Update display widgets
+    showImage(inverseLowPass, ui->Widget_Output_1);
+    showImage(inverseHighPass, ui->Widget_Output_2);
+
+
+    qDebug() << "Frequency domain filter applied with cutoff radius: " << radius;
+}
+
+// Helper function to create circular mask (low-pass or high-pass)
+cv::Mat Image_Processing::createCircularMask(cv::Size size, int radius, bool isLowPass)
+{
+    // Create a complex mask (2 channels: real + imaginary)
+    cv::Mat mask(size, CV_32FC2, cv::Scalar(0, 0));
+    cv::Point center(size.width / 2, size.height / 2);
+
+    // Create the circular mask
+    for (int i = 0; i < size.height; i++) {
+        for (int j = 0; j < size.width; j++) {
+            double distance = std::sqrt(pow(i - center.y, 2) + pow(j - center.x, 2));
+
+            if (isLowPass) {
+                // Low-pass mask: 1 inside the circle, 0 outside
+                if (distance <= radius) {
+                    mask.at<cv::Vec2f>(i, j)[0] = 1.0; // Real part
+                    mask.at<cv::Vec2f>(i, j)[1] = 0.0; // Imaginary part
+                }
+            }
+            else {
+                // High-pass mask: 0 inside the circle, 1 outside
+                if (distance > radius) {
+                    mask.at<cv::Vec2f>(i, j)[0] = 1.0; // Real part
+                    mask.at<cv::Vec2f>(i, j)[1] = 0.0; // Imaginary part
+                }
+            }
+        }
+    }
+
+    return mask;
+}
+
+// Helper function to shift zero frequency to/from center
+void Image_Processing::shiftDFT(cv::Mat& magImage)
+{
+    int cx = magImage.cols / 2;
+    int cy = magImage.rows / 2;
+
+    // Create ROI for quadrants
+    cv::Mat q0(magImage, cv::Rect(0, 0, cx, cy));      // Top-left
+    cv::Mat q1(magImage, cv::Rect(cx, 0, cx, cy));     // Top-right
+    cv::Mat q2(magImage, cv::Rect(0, cy, cx, cy));     // Bottom-left
+    cv::Mat q3(magImage, cv::Rect(cx, cy, cx, cy));    // Bottom-right
+
+    // Swap quadrants (Top-left with Bottom-right)
+    cv::Mat tmp;
+    q0.copyTo(tmp);
+    q3.copyTo(q0);
+    tmp.copyTo(q3);
+
+    // Swap quadrants (Top-right with Bottom-left)
+    q1.copyTo(tmp);
+    q2.copyTo(q1);
+    tmp.copyTo(q2);
 }

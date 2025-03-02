@@ -101,6 +101,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="test.cpp" />
     <QtRcc Include="Image_Processing.qrc" />
     <QtMoc Include="Image_Processing.h" />
     <ClCompile Include="Image_Processing.cpp" />
