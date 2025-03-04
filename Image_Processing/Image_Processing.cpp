@@ -1168,3 +1168,5 @@ void Image_Processing::shiftDFT(cv::Mat& magImage)
     q2.copyTo(q1);
     tmp.copyTo(q2);
 }
+
+// FINAL INSHALLAH //
